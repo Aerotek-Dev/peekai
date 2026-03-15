@@ -2,13 +2,29 @@
 import threading
 import io
 import os
+import json
 import tkinter as tk
+from tkinter import simpledialog
 from PIL import ImageGrab
 from google import genai
 from google.genai import types
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DEFAULT_PROMPT = "描述当前屏幕内容，如果是视频/动画请说明画面情节。"
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".screen_ai_config.json")
+GEMINI_API_KEY = ""
+
+
+def load_key() -> str:
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f).get("api_key", "")
+    except:
+        return ""
+
+
+def save_key(key: str):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump({"api_key": key}, f)
 
 
 def capture_screen() -> bytes:
@@ -100,9 +116,21 @@ class App:
 
 
 def main():
-    if not GEMINI_API_KEY:
-        print("[!] 未设置 GEMINI_API_KEY")
-        return
+    global GEMINI_API_KEY
+
+    key = load_key()
+    if not key:
+        root_tmp = tk.Tk()
+        root_tmp.withdraw()
+        key = simpledialog.askstring(
+            "设置API Key", "请输入你的Gemini API Key：", show="*")
+        root_tmp.destroy()
+        if not key:
+            return
+        save_key(key)
+
+    GEMINI_API_KEY = key
+
     root = tk.Tk()
     App(root)
     root.mainloop()
