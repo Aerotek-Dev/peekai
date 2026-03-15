@@ -1,197 +1,109 @@
-#!/usr/bin/env python3
+import os
+import sys
+import logging
+
+# 【终极杀招】强制静音 pywebview 和 pythonnet 的底层日志，彻底屏蔽反射循环报错
+logging.getLogger('pywebview').setLevel(logging.CRITICAL)
+
+# 禁用辅助功能特性，降低底层触发概率
+os.environ['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS'] = '--disable-features=AccessibilityLayout'
+os.environ['WEBVIEW2_DISABLE_ACCESSIBILITY'] = '1'
+
+import webview
 import threading
 import time
-import io
-import os
 import json
-import sys
 import base64
-import tkinter as tk
-from tkinter import simpledialog
+import io
+import keyboard
 from PIL import ImageGrab
 from google import genai
-import keyboard
 
 # 修复 Windows 高分屏 DPI 缩放导致的截屏不全问题
 if sys.platform == "win32":
     try:
         import ctypes
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
-DEFAULT_PROMPT = "描述当前屏幕内容，如果是视频/动画请说明画面情节。"
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".screen_ai_config.json")
 LOG_FILE = os.path.join(os.path.expanduser("~"), "screen_ai_history.md")
-GEMINI_API_KEY = ""
+DEFAULT_PROMPT = "描述当前屏幕内容，如果是视频/动画请说明画面情节。"
 
-def load_config() -> dict:
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-def save_config(data: dict):
-    with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f)
-
-def capture_screen() -> bytes:
-    img = ImageGrab.grab()
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
-
-def analyze(history: list, image_bytes: bytes, prompt: str) -> str:
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    contents = []
-    
-    # 历史记录仅保留文本上下文（控制成本）
-    for role, text in history[:-1]:
-        contents.append({"role": role, "parts": [{"text": text}]})
-        
-    contents.append({
-        "role": "user",
-        "parts": [
-            {"inline_data": {"mime_type": "image/png",
-                             "data": base64.b64encode(image_bytes).decode()}},
-            {"text": prompt}
-        ]
-    })
-    
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=contents,
-    )
-    return response.text
-
-class BubbleFrame(tk.Frame):
-    def __init__(self, parent, text, is_user=True, **kwargs):
-        super().__init__(parent, bg="#1e1e1e", **kwargs)
-        align = "e" if is_user else "w"
-        bubble_bg = "#0078d4" if is_user else "#2d2d2d"
-        fg = "#ffffff"
-
-        label = tk.Label(
-            self, text=text, bg=bubble_bg, fg=fg,
-            font=("微软雅黑", 10), wraplength=260,
-            justify="left", padx=10, pady=6
-        )
-        label.pack(anchor=align, padx=10, pady=3)
-
-class App:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("屏幕AI")
-        self.root.attributes("-topmost", True)
-        self.root.attributes("-alpha", 0.92)
-        self.root.geometry("380x600+50+50")
-        self.root.resizable(True, True)
-        self.root.configure(bg="#1e1e1e")
-
+class ScreenAIApi:
+    def __init__(self):
+        self.window = None
+        self.config = self._load_config()
         self.history = []
-        self.config = load_config()
         self._log_lock = threading.Lock()
-
-        self._build_ui()
+        
+        self.api_key = self.config.get("api_key", "")
+        self.hotkey = self.config.get("hotkey", "ctrl+shift+a")
+        self.client = None
+        
+        if self.api_key:
+            self._init_client()
+            
         self._register_hotkey()
 
-    def _build_ui(self):
-        top = tk.Frame(self.root, bg="#1e1e1e")
-        top.pack(fill="x", padx=10, pady=(10, 4))
+    def set_window(self, window):
+        self.window = window
 
-        tk.Label(top, text="屏幕AI", bg="#1e1e1e", fg="#ffffff",
-                 font=("微软雅黑", 12, "bold")).pack(side="left")
+    def _load_config(self) -> dict:
+        try:
+            with open(CONFIG_FILE, "r") as f: return json.load(f)
+        except Exception:
+            return {}
 
-        tk.Button(top, text="新对话", command=self.new_chat,
-                  bg="#3a3a3a", fg="#ffffff", relief="flat",
-                  font=("微软雅黑", 9), padx=8, cursor="hand2").pack(side="right")
+    def _save_config(self):
+        with open(CONFIG_FILE, "w") as f:
+            json.dump({"api_key": self.api_key, "hotkey": self.hotkey}, f)
 
-        tk.Button(top, text="快捷键", command=self.set_hotkey,
-                  bg="#3a3a3a", fg="#ffffff", relief="flat",
-                  font=("微软雅黑", 9), padx=8, cursor="hand2").pack(side="right", padx=4)
+    def _init_client(self):
+        try:
+            self.client = genai.Client(api_key=self.api_key)
+        except Exception as e:
+            print(f"API 初始化失败: {e}")
 
-        self.hotkey_var = tk.StringVar(value=self.config.get("hotkey", "ctrl+shift+a"))
-        tk.Label(top, textvariable=self.hotkey_var,
-                 bg="#1e1e1e", fg="#888888",
-                 font=("微软雅黑", 9)).pack(side="right", padx=4)
+    def check_setup(self):
+        return {"has_key": bool(self.api_key), "hotkey": self.hotkey}
 
-        self.canvas = tk.Canvas(self.root, bg="#1e1e1e", highlightthickness=0)
-        scrollbar = tk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=scrollbar.set)
+    def save_settings(self, new_key, new_hotkey):
+        self.api_key = new_key.strip()
+        self.hotkey = new_hotkey.strip()
+        self._save_config()
+        self._init_client()
+        self._register_hotkey()
+        return True
 
-        scrollbar.pack(side="right", fill="y")
-        self.canvas.pack(fill="both", expand=True, padx=(10, 0))
+    def clear_history(self):
+        self.history.clear()
+        return True
 
-        self.chat_frame = tk.Frame(self.canvas, bg="#1e1e1e")
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.chat_frame, anchor="nw")
-
-        self.chat_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfig(self.canvas_window, width=e.width))
-
-        bottom = tk.Frame(self.root, bg="#1e1e1e")
-        bottom.pack(fill="x", padx=10, pady=8)
-
-        self.prompt_var = tk.StringVar(value=DEFAULT_PROMPT)
-        self.prompt_entry = tk.Entry(
-            bottom, textvariable=self.prompt_var,
-            bg="#2d2d2d", fg="#ffffff", insertbackground="white",
-            relief="flat", font=("微软雅黑", 10), bd=6
-        )
-        self.prompt_entry.pack(fill="x", pady=(0, 4))
-
-        self.btn = tk.Button(
-            bottom, text="📷 截图并分析", command=self.trigger,
-            bg="#0078d4", fg="white", activebackground="#005fa3",
-            relief="flat", font=("微软雅黑", 11, "bold"),
-            pady=6, cursor="hand2"
-        )
-        self.btn.pack(fill="x")
-
-        self.status = tk.Label(self.root, text="就绪", bg="#1e1e1e", fg="#888888", font=("微软雅黑", 9))
-        self.status.pack(pady=(0, 6))
+    def trigger_from_hotkey(self):
+        if self.window:
+            self.window.evaluate_js("window.startAnalysisFromHotkey()")
 
     def _register_hotkey(self):
         try:
             keyboard.unhook_all_hotkeys()
         except Exception:
             pass
+        if self.hotkey:
+            try:
+                keyboard.add_hotkey(self.hotkey, self.trigger_from_hotkey)
+            except Exception as e:
+                print(f"热键注册失败: {e}")
 
-        hotkey = self.config.get("hotkey", "ctrl+shift+a")
-        try:
-            keyboard.add_hotkey(hotkey, self.trigger)
-            self.hotkey_var.set(hotkey)
-        except Exception:
-            if sys.platform != "win32":
-                self.hotkey_var.set("平台不支持或无Root")
-                self.status.config(text="快捷键注册失败(需特权)")
-            else:
-                self.hotkey_var.set("热键冲突")
-
-    def set_hotkey(self):
-        root_tmp = tk.Tk()
-        root_tmp.withdraw()
-        new_key = simpledialog.askstring(
-            "设置快捷键", "输入新快捷键（如 ctrl+shift+a）：",
-            initialvalue=self.config.get("hotkey", "ctrl+shift+a"))
-        root_tmp.destroy()
-        
-        if new_key:
-            self.config["hotkey"] = new_key
-            save_config(self.config)
-            self._register_hotkey()
-
-    def new_chat(self):
-        self.history.clear()
-        for widget in self.chat_frame.winfo_children():
-            widget.destroy()
-        self.status.config(text="新对话已开始")
-
-    def add_bubble(self, text, is_user=True):
-        bubble = BubbleFrame(self.chat_frame, text, is_user=is_user)
-        bubble.pack(fill="x", pady=2)
-        self.root.update_idletasks()
-        self.canvas.yview_moveto(1.0)
+    def _capture_screen(self) -> bytes:
+        img = ImageGrab.grab(all_screens=True)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
 
     def _append_to_log(self, prompt, response):
         try:
@@ -203,64 +115,242 @@ class App:
                     f.write(f"**AI:** {response}\n\n")
                     f.write("---\n\n")
         except Exception as e:
-            print(f"日志保存失败: {e}")
+            pass # 静默处理文件写入错误
 
-    def trigger(self):
-        if self.btn["state"] == "disabled":
-            return
-        
-        prompt_text = self.prompt_var.get().strip() or DEFAULT_PROMPT
-        
-        self.btn.config(state="disabled", text="分析中...")
-        self.status.config(text="截图中...")
-        self.root.withdraw()
-        
-        threading.Thread(target=self.run, args=(prompt_text,), daemon=True).start()
-
-    def run(self, prompt_text):
+    def run_analysis(self, prompt):
+        if not self.client:
+            return "❌ 请先点击右上角【设置】配置有效的 Gemini API Key！"
+            
         try:
+            if self.window:
+                self.window.hide()
             time.sleep(0.3)
-            image_bytes = capture_screen()
             
-            self.root.after(0, self.root.deiconify)
-            self.root.after(0, lambda: self.status.config(text="发送中..."))
-            self.root.after(0, lambda: self.add_bubble(prompt_text, is_user=True))
+            image_bytes = self._capture_screen()
             
-            self.history.append(("user", prompt_text))
-            result = analyze(self.history, image_bytes, prompt_text)
-            self.history.append(("model", result))
+            if self.window:
+                self.window.show()
 
-            self.root.after(0, lambda: self.add_bubble(result, is_user=False))
-            self.root.after(0, lambda: self.status.config(text="完成"))
+            contents = []
+            for role, text in self.history:
+                contents.append({"role": role, "parts": [{"text": text}]})
+                
+            contents.append({
+                "role": "user",
+                "parts": [
+                    {"inline_data": {"mime_type": "image/png", "data": base64.b64encode(image_bytes).decode()}},
+                    {"text": prompt}
+                ]
+            })
+
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash", 
+                contents=contents,
+            )
             
-            self._append_to_log(prompt_text, result)
+            result = response.text
+            self.history.append(("user", prompt))
+            self.history.append(("model", result))
+            self._append_to_log(prompt, result)
             
+            return result
         except Exception as e:
-            self.root.after(0, self.root.deiconify)
-            self.root.after(0, lambda: self.add_bubble(f"错误: {str(e)}", is_user=False))
-            self.root.after(0, lambda: self.status.config(text="出错"))
-        finally:
-            self.root.after(0, lambda: self.btn.config(state="normal", text="📷 截图并分析"))
+            if self.window:
+                self.window.show()
+            return f"❌ 识别失败: {str(e)}"
+
+# --- 现代 HTML/CSS/JS 前端 ---
+HTML_UI = """
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root { --primary: #0078d4; --bg: #121212; --card: #1e1e1e; --text: #e0e0e0; }
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        
+        .header { background: rgba(30,30,30,0.8); backdrop-filter: blur(10px); padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; z-index: 10; }
+        .title { font-weight: 600; font-size: 16px; color: white; display: flex; align-items: center; gap: 8px;}
+        .actions { display: flex; gap: 10px; }
+        .icon-btn { background: transparent; border: 1px solid #444; color: #aaa; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: 0.2s;}
+        .icon-btn:hover { background: #333; color: white; }
+
+        #chat { flex: 1; overflow-y: auto; padding: 20px; scroll-behavior: smooth; }
+        .bubble { margin-bottom: 20px; padding: 14px 18px; border-radius: 12px; max-width: 88%; line-height: 1.6; font-size: 14px; animation: slideUp 0.3s ease; }
+        .user { background: var(--primary); color: white; margin-left: auto; border-bottom-right-radius: 4px; }
+        .ai { background: var(--card); border: 1px solid #333; margin-right: auto; border-bottom-left-radius: 4px; }
+        
+        .ai pre { background: #000; padding: 12px; border-radius: 8px; overflow-x: auto; font-family: 'Consolas', monospace; border: 1px solid #222;}
+        .ai code { font-family: 'Consolas', monospace; background: rgba(255,255,255,0.1); padding: 2px 4px; border-radius: 4px; }
+        .ai p { margin: 0 0 10px 0; }
+        .ai p:last-child { margin: 0; }
+
+        .footer { padding: 15px 20px; background: #1a1a1a; display: flex; gap: 10px; border-top: 1px solid #333; }
+        input { flex: 1; background: #252525; border: 1px solid #444; color: white; padding: 12px 16px; border-radius: 8px; outline: none; transition: border 0.2s;}
+        input:focus { border-color: var(--primary); }
+        button.primary { background: var(--primary); border: none; color: white; padding: 0 22px; border-radius: 8px; cursor: pointer; font-weight: 600; transition: 0.2s; }
+        button.primary:hover { background: #006abc; }
+        button.primary:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+        #modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; z-index: 100; backdrop-filter: blur(3px);}
+        .modal-content { background: var(--card); padding: 25px; border-radius: 12px; width: 80%; border: 1px solid #333; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .modal-content h3 { margin-top: 0; color: white; margin-bottom: 20px;}
+        .input-group { margin-bottom: 15px; }
+        .input-group label { display: block; margin-bottom: 5px; font-size: 13px; color: #aaa; }
+        .input-group input { width: 100%; box-sizing: border-box; background: #252525; border: 1px solid #444; color: white; padding: 10px; border-radius: 6px;}
+        .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 25px;}
+
+        @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .loading { display: flex; gap: 4px; align-items: center; color: #888; font-style: italic;}
+        .dot { width: 6px; height: 6px; background: #888; border-radius: 50%; animation: pulse 1.5s infinite; }
+        .dot:nth-child(2) { animation-delay: 0.2s; }
+        .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes pulse { 0%, 100% { opacity: 0.4; transform: scale(0.8);} 50% { opacity: 1; transform: scale(1.2);} }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="title">📷 屏幕 AI Pro</div>
+        <div class="actions">
+            <button class="icon-btn" onclick="clearChat()">清除对话</button>
+            <button class="icon-btn" onclick="openSettings()">设置</button>
+        </div>
+    </div>
+
+    <div id="chat">
+        <div class="bubble ai" id="welcome-msg">正在初始化...</div>
+    </div>
+
+    <div class="footer">
+        <input id="prompt" type="text" placeholder="输入指令 (默认: 描述屏幕)..." autocomplete="off">
+        <button class="primary" id="btn" onclick="startAnalysis()">分析</button>
+    </div>
+
+    <div id="modal">
+        <div class="modal-content">
+            <h3>⚙️ 核心配置</h3>
+            <div class="input-group">
+                <label>Gemini API Key</label>
+                <input type="password" id="api-key-input" placeholder="输入你的 API Key">
+            </div>
+            <div class="input-group">
+                <label>全局快捷键</label>
+                <input type="text" id="hotkey-input" placeholder="例如: ctrl+shift+a">
+            </div>
+            <div class="modal-actions">
+                <button class="icon-btn" onclick="document.getElementById('modal').style.display='none'">取消</button>
+                <button class="primary" onclick="saveSettings()" style="padding: 8px 20px;">保存配置</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chat = document.getElementById('chat');
+        const input = document.getElementById('prompt');
+        const btn = document.getElementById('btn');
+        let defaultPrompt = "描述当前屏幕内容，如果是视频/动画请说明画面情节。";
+        let currentHotkey = "ctrl+shift+a";
+
+        window.addEventListener('pywebviewready', async function() {
+            const setup = await pywebview.api.check_setup();
+            currentHotkey = setup.hotkey;
+            document.getElementById('hotkey-input').value = currentHotkey;
+            
+            if (!setup.has_key) {
+                document.getElementById('welcome-msg').innerText = "⚠️ 请先点击右上角【设置】配置 API Key。";
+                openSettings();
+            } else {
+                document.getElementById('welcome-msg').innerHTML = `你好！按下快捷键 <code>${currentHotkey}</code> 或点击按钮，我会为你解读屏幕。`;
+            }
+        });
+
+        function openSettings() {
+            document.getElementById('modal').style.display = 'flex';
+        }
+
+        async function saveSettings() {
+            const key = document.getElementById('api-key-input').value;
+            const hk = document.getElementById('hotkey-input').value;
+            if(!key && !await pywebview.api.check_setup().then(s=>s.has_key)) {
+                alert("API Key 不能为空！"); return;
+            }
+            await pywebview.api.save_settings(key, hk);
+            currentHotkey = hk;
+            document.getElementById('modal').style.display = 'none';
+            document.getElementById('welcome-msg').innerHTML = `配置已更新！快捷键设为 <code>${hk}</code>。`;
+        }
+
+        async function clearChat() {
+            await pywebview.api.clear_history();
+            chat.innerHTML = `<div class="bubble ai">历史记录已清除。开启新话题吧！</div>`;
+        }
+
+        async function typeWriter(text, element) {
+            let current = "";
+            for (const char of text) {
+                current += char;
+                element.innerHTML = marked.parse(current);
+                chat.scrollTop = chat.scrollHeight;
+                await new Promise(r => setTimeout(r, 8));
+            }
+        }
+
+        async function startAnalysis() {
+            if (btn.disabled) return;
+            const val = input.value.trim() || defaultPrompt;
+            
+            input.value = ""; 
+            btn.disabled = true; 
+            btn.innerText = "截图中...";
+            
+            const uDiv = document.createElement('div');
+            uDiv.className = 'bubble user'; uDiv.innerText = val;
+            chat.appendChild(uDiv);
+            
+            const aiDiv = document.createElement('div');
+            aiDiv.className = 'bubble ai'; 
+            aiDiv.innerHTML = '<div class="loading">正在分析画面<div class="dot"></div><div class="dot"></div><div class="dot"></div></div>';
+            chat.appendChild(aiDiv);
+            chat.scrollTop = chat.scrollHeight;
+
+            const result = await pywebview.api.run_analysis(val);
+            
+            aiDiv.innerHTML = "";
+            await typeWriter(result, aiDiv);
+            
+            btn.disabled = false; 
+            btn.innerText = "分析";
+        }
+
+        input.addEventListener('keypress', (e) => { if(e.key === 'Enter') startAnalysis(); });
+        window.startAnalysisFromHotkey = () => { startAnalysis(); };
+    </script>
+</body>
+</html>
+"""
 
 def main():
-    global GEMINI_API_KEY
-    config = load_config()
-    key = config.get("api_key", "")
-
-    if not key:
-        root_tmp = tk.Tk()
-        root_tmp.withdraw()
-        key = simpledialog.askstring("设置API Key", "请输入你的Gemini API Key：", show="*")
-        root_tmp.destroy()
-        if not key:
-            return
-        config["api_key"] = key
-        save_config(config)
-
-    GEMINI_API_KEY = key
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    api = ScreenAIApi()
+    
+    # 【改动】保留 on_top 参数，强制固定 x, y 坐标，跳过居中计算
+    window = webview.create_window(
+        title='屏幕 AI 助手',
+        html=HTML_UI,
+        js_api=api,
+        width=420,
+        height=680,
+        x=200, 
+        y=100,
+        on_top=True,
+        background_color='#121212'
+    )
+    
+    api.set_window(window)
+    
+    # 强制指定 gui 模式
+    webview.start(gui='edgechromium')
 
 if __name__ == "__main__":
     main()
