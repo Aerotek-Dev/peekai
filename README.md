@@ -47,3 +47,47 @@ https://developer.microsoft.com/microsoft-edge/webview2/
 ## 许可证
 
 MIT License
+# peekai
+
+A desktop screenshot analysis tool powered by Gemini vision. Supports multi-turn conversation, global hotkey, and Markdown rendering.
+
+## Features
+
+- Global hotkey to trigger screenshot analysis
+- Multi-turn conversation with text context
+- Markdown rendering in responses
+- Auto-save conversation log to `~/screen_ai_history.md`
+- API Key stored locally, configured on first launch
+
+## Download
+
+Go to [Releases](../../releases) to download the latest `屏幕AI.exe`.
+
+On first launch, a settings window will appear. Enter your Gemini API Key to get started.
+
+## Requirements
+
+- Windows 10/11
+- Microsoft Edge WebView2 Runtime (built-in on Windows 11, [download here](https://developer.microsoft.com/microsoft-edge/webview2/) for Windows 10)
+
+## Run from Source
+
+1. Make sure Python 3.12 is installed
+
+2. Clone the repo
+git clone https://github.com/Aerotek-Dev/peekai.git
+cd peekai
+3. Create a virtual environment
+py -3.12 -m venv venv
+venv\Scripts\activate
+4. Install dependencies
+pip install pillow keyboard google-genai pywebview
+5. Run
+python screen_ai.py
+## Get a Gemini API Key
+
+Free at https://aistudio.google.com/app/apikey
+
+## License
+
+MIT License
