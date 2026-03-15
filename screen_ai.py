@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import threading
+import time
 import io
 import os
 import json
@@ -96,11 +97,14 @@ class App:
     def trigger(self):
         self.btn.config(state="disabled", text="分析中...")
         self.status.config(text="截图中...")
+        self.root.withdraw()  # 隐藏窗口
         threading.Thread(target=self.run, daemon=True).start()
 
     def run(self):
         try:
+            time.sleep(0.3)
             image_bytes = capture_screen()
+            self.root.after(0, self.root.deiconify)
             self.root.after(0, lambda: self.status.config(
                 text=f"截图完成 ({len(image_bytes)//1024}KB)，发送中..."))
             prompt = self.prompt_var.get().strip() or DEFAULT_PROMPT
@@ -108,6 +112,7 @@ class App:
             self.root.after(0, lambda: self.set_text(result))
             self.root.after(0, lambda: self.status.config(text="完成"))
         except Exception as e:
+            self.root.after(0, self.root.deiconify)
             self.root.after(0, lambda: self.set_text(f"错误: {e}"))
             self.root.after(0, lambda: self.status.config(text="出错"))
         finally:
