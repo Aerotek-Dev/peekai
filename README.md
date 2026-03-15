@@ -26,8 +26,8 @@
 1. 确保已安装 Python 3.12
 
 2. 克隆仓库
-git clone https://github.com/Aerotek-Dev/screen_ai.git
-cd screen_ai
+git clone https://github.com/Aerotek-Dev/peekai.git
+cd peekai
 3. 创建虚拟环境
 py -3.12 -m venv venv
 venv\Scripts\activate
