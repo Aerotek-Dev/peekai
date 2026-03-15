@@ -331,7 +331,28 @@ HTML_UI = """
 </html>
 """
 
+def check_webview2():
+    import winreg
+    try:
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, 
+            r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}")
+        winreg.CloseKey(key)
+        return True
+    except:
+        return False
+
 def main():
+    if sys.platform == "win32" and not check_webview2():
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        if messagebox.askyesno("缺少组件", 
+            "需要安装 Microsoft Edge WebView2 Runtime\n是否打开下载页面？"):
+            import webbrowser
+            webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/")
+        root.destroy()
+        sys.exit(0)
     api = ScreenAIApi()
     
     # 【改动】保留 on_top 参数，强制固定 x, y 坐标，跳过居中计算
